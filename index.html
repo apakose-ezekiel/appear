@@ -73,6 +73,14 @@
     <div class="sub">Type a business name. This agent runs a deep, multi-pass live scan across search and AI assistants, then generates a full fix package grounded only in real facts.</div>
   </header>
 
+  <div class="panel" id="test-panel" style="padding:16px 28px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--text-dim);">Worker connection status: <span id="test-status">not checked</span></div>
+      <button class="secondary" style="margin:0;width:auto;padding:8px 16px;font-size:12px;" onclick="testConnection()">Test Worker Connection</button>
+    </div>
+    <div id="test-detail" style="margin-top:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;"></div>
+  </div>
+
   <div class="panel" id="intake-panel">
     <label>Business name *</label>
     <input id="biz-name" placeholder="e.g. Koinonia Global" />
@@ -127,14 +135,55 @@ let auditData = { engines: [], score: null, gap_summary: "" };
 let bizInfo = null;
 
 async function callClaude(systemPrompt, userPrompt, useSearch) {
-  const res = await fetch(WORKER_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ system: systemPrompt, prompt: userPrompt, useSearch: !!useSearch }),
-  });
-  const data = await res.json();
+  let res;
+  try {
+    res = await fetch(WORKER_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ system: systemPrompt, prompt: userPrompt, useSearch: !!useSearch }),
+    });
+  } catch (networkErr) {
+    // fetch() itself threw — the request never got a response at all.
+    throw new Error(
+      `Could not reach the Worker at ${WORKER_URL} (${networkErr.message}). ` +
+      `This means the URL is wrong, the Worker isn't deployed/live, or Cloudflare blocked the request before CORS could apply. ` +
+      `Check the Worker URL in your Cloudflare dashboard matches WORKER_URL exactly.`
+    );
+  }
+
+  let bodyText = await res.text();
+
+  if (!res.ok) {
+    throw new Error(`Worker returned HTTP ${res.status}. Body: ${bodyText.slice(0, 300)}`);
+  }
+
+  let data;
+  try {
+    data = JSON.parse(bodyText);
+  } catch (parseErr) {
+    throw new Error(`Worker response wasn't valid JSON. Raw body: ${bodyText.slice(0, 300)}`);
+  }
+
   if (data.error) throw new Error(data.error);
   return data.text || "";
+}
+
+async function testConnection() {
+  const statusEl = document.getElementById('test-status');
+  const detailEl = document.getElementById('test-detail');
+  statusEl.textContent = 'checking...';
+  statusEl.style.color = 'var(--partial)';
+  detailEl.textContent = '';
+  try {
+    const text = await callClaude('Reply with only the word OK.', 'Reply with only the word OK.', false);
+    statusEl.textContent = 'connected ✓';
+    statusEl.style.color = 'var(--found)';
+    detailEl.innerHTML = `<span style="color:var(--text-dim);">Worker replied: "${text.trim().slice(0,120)}"</span>`;
+  } catch (err) {
+    statusEl.textContent = 'failed ✗';
+    statusEl.style.color = 'var(--alert)';
+    detailEl.innerHTML = `<span class="error">${err.message}</span>`;
+  }
 }
 
 function parseJSON(raw) {
@@ -146,7 +195,8 @@ function parseJSON(raw) {
     if (match) {
       try { return JSON.parse(match[0]); } catch (e2) { /* fall through */ }
     }
-    throw new Error('Could not parse response as JSON');
+    const preview = cleaned ? cleaned.slice(0, 300) : '(empty response)';
+    throw new Error('Could not parse response as JSON. Raw reply was: ' + preview);
   }
 }
 
